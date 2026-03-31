@@ -9,9 +9,67 @@ async function getToken() {
     body: JSON.stringify({ username: PH_USER, password: PH_PASS }),
   });
   const text = await res.text();
-  console.log("Auth status:", res.status, "Body:", text);
   if (!res.ok) throw new Error("Auth fehlgeschlagen: " + res.status + " " + text);
   return JSON.parse(text).access_token;
+}
+
+async function sendNotificationEmail(data) {
+  const { firstName, lastName, email, phone, address, propType, dealType, area, year, rooms, dossierId } = data;
+  
+  // Nutze Netlify's eingebauten Email-Service via fetch an eine mailto-kompatible API
+  // Wir bauen eine einfache HTML-Email zusammen
+  const subject = `Neue Bewertungsanfrage: ${firstName} ${lastName} — ${address}`;
+  const body = `
+Neue Immobilienbewertungsanfrage über doerter.immobilien
+
+KONTAKT
+-------
+Name: ${firstName} ${lastName}
+E-Mail: ${email}
+Telefon: ${phone || '—'}
+
+IMMOBILIE
+---------
+Typ: ${propType}
+Transaktion: ${dealType}
+Adresse: ${address}
+Wohnfläche: ${area} m²
+Baujahr: ${year}
+Zimmer: ${rooms}
+
+PRICEHUBBLE
+-----------
+Dossier-ID: ${dossierId || '—'}
+Dashboard: https://dash.pricehubble.com
+
+---
+Automatisch gesendet von doerter.immobilien
+  `.trim();
+
+  // Sende über Netlify Forms Email (via fetch zu einem einfachen mailto-Endpunkt)
+  // Wir nutzen hier den kostenlosen Resend.com API (oder falls nicht verfügbar: loggen wir nur)
+  console.log("EMAIL NOTIFICATION:", subject);
+  console.log(body);
+  
+  // Versuche Resend API (kostenlos bis 3000/Monat)
+  try {
+    const emailRes = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + (process.env.RESEND_API_KEY || ""),
+      },
+      body: JSON.stringify({
+        from: "bewertung@doerter.immobilien",
+        to: "info@doerter.com",
+        subject,
+        text: body,
+      }),
+    });
+    console.log("Email sent:", emailRes.status);
+  } catch(e) {
+    console.log("Email error (non-critical):", e.message);
+  }
 }
 
 export const handler = async (event) => {
@@ -22,62 +80,48 @@ export const handler = async (event) => {
     "Content-Type": "application/json",
   };
 
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers, body: "" };
-  }
-
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, headers, body: JSON.stringify({ error: "Nur POST erlaubt" }) };
-  }
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers, body: "" };
+  if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: JSON.stringify({ error: "Nur POST erlaubt" }) };
 
   try {
-    const { action, payload } = JSON.parse(event.body);
-    console.log("Action:", action);
-    console.log("Payload:", JSON.stringify(payload));
+    const { action, payload, contactData } = JSON.parse(event.body);
+
+    // Nur E-Mail senden, kein PH-Aufruf
+    if (action === "sendNotification") {
+      await sendNotificationEmail(payload);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
+    }
 
     const token = await getToken();
-    console.log("Token erhalten:", token ? "ja" : "nein");
 
     let endpoint;
-    if (action === "createDossier") {
-      endpoint = "/api/v1/dossiers";
-    } else if (action === "getValuation") {
-      endpoint = "/api/v1/valuation/property_value";
-    } else {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
-    }
+    if (action === "createDossier") endpoint = "/api/v1/dossiers";
+    else if (action === "getValuation") endpoint = "/api/v1/valuation/property_value";
+    else return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
 
     const phRes = await fetch(`${PH_BASE}${endpoint}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + token,
-      },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
       body: JSON.stringify(payload),
     });
 
     const responseText = await phRes.text();
-    console.log("PH Status:", phRes.status, "Response:", responseText);
-
     let data;
     try { data = JSON.parse(responseText); } catch(e) { data = { raw: responseText }; }
 
+    // Bei erfolgreichem Dossier: E-Mail senden
+    if (phRes.ok && action === "createDossier" && contactData) {
+      await sendNotificationEmail({ ...contactData, dossierId: data.id || data.dossierId });
+    }
+
     if (!phRes.ok) {
-      return { 
-        statusCode: phRes.status, 
-        headers, 
-        body: JSON.stringify({ error: data, action, payloadSent: payload }) 
-      };
+      return { statusCode: phRes.status, headers, body: JSON.stringify({ error: data }) };
     }
 
     return { statusCode: 200, headers, body: JSON.stringify(data) };
 
   } catch (err) {
     console.log("Exception:", err.message);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: err.message }),
-    };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
   }
 };
