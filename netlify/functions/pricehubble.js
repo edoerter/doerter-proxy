@@ -54,6 +54,9 @@ export const handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
     }
 
+    console.log("Action:", action);
+    console.log("Payload:", JSON.stringify(payload, null, 2));
+
     const phRes = await fetch(`${PH_BASE}${endpoint}`, {
       method,
       headers: {
@@ -63,10 +66,15 @@ export const handler = async (event) => {
       body: JSON.stringify(payload),
     });
 
-    const data = await phRes.json();
+    const responseText = await phRes.text();
+    console.log("PriceHubble Status:", phRes.status);
+    console.log("PriceHubble Response:", responseText);
+
+    let data;
+    try { data = JSON.parse(responseText); } catch(e) { data = { raw: responseText }; }
 
     if (!phRes.ok) {
-      return { statusCode: phRes.status, headers, body: JSON.stringify({ error: data }) };
+      return { statusCode: phRes.status, headers, body: JSON.stringify({ error: data, sentPayload: payload }) };
     }
 
     return { statusCode: 200, headers, body: JSON.stringify(data) };
