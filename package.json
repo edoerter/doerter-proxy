@@ -1,0 +1,6 @@
+{
+  "name": "doerter-pricehubble-proxy",
+  "version": "1.0.0",
+  "description": "PriceHubble API Proxy für doerter.immobilien",
+  "type": "module"
+}
