@@ -60,7 +60,7 @@ Automatisch gesendet von doerter.immobilien
         "Authorization": "Bearer " + (process.env.RESEND_API_KEY || ""),
       },
       body: JSON.stringify({
-        from: "bewertung@doerter.immobilien",
+        from: "Doerter Immobilien <bewertung@doerter.immobilien>",
         to: "info@doerter.com",
         subject,
         text: body,
