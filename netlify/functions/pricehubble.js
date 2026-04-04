@@ -2,6 +2,9 @@ const PH_BASE = "https://api.pricehubble.com";
 const PH_USER = "homea-ph-api";
 const PH_PASS = "PsgXvbTNKL";
 
+const DOERTER_LOGO = "https://images.squarespace-cdn.com/content/v1/6966679256607617c3d13b73/de0d3c50-8cef-41f6-b3be-bbfd33b3fa96/Design+ohne+Titel+%2812%29.png?format=300w";
+const CALENDLY_URL = "https://calendly.com/erten-doerter/kostenlose-erstberatung-30-minuten-klon";
+
 async function getToken() {
   const res = await fetch(`${PH_BASE}/auth/login/credentials`, {
     method: "POST",
@@ -13,10 +16,38 @@ async function getToken() {
   return JSON.parse(text).access_token;
 }
 
+// ═══════ DOSSIER SHARING LINK ═══════
+async function getDossierShareLink(dossierId, token) {
+  try {
+    const res = await fetch(`${PH_BASE}/api/v1/dossiers/${dossierId}/sharing`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + token,
+      },
+      body: JSON.stringify({
+        dossierId,
+        daysToLive: 90,
+        countryCode: "DE",
+        locale: "de",
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.url || data.shareUrl || data.link || null;
+    }
+    console.log("Dossier sharing failed (non-critical):", res.status);
+    return null;
+  } catch (e) {
+    console.log("Dossier sharing error (non-critical):", e.message);
+    return null;
+  }
+}
+
 // ═══════ E-MAIL: Benachrichtigung an DOERTER (info@doerter.com) ═══════
 async function sendNotificationEmail(data) {
   const { firstName, lastName, email, phone,
-    address, propType, dealType, area, year, rooms, dossierId, valuation } = data;
+    address, propType, dealType, area, year, rooms, dossierId, valuation, dossierShareLink } = data;
 
   const subject = `Neue Bewertungsanfrage: ${firstName} ${lastName} — ${address}`;
 
@@ -50,8 +81,9 @@ ${valuationText}
 
 PRICEHUBBLE
 -----------
-Dossier-ID: ${dossierId || "—"}
-Dashboard:  https://dash.pricehubble.com
+Dossier-ID:  ${dossierId || "—"}
+Dashboard:   https://dash.pricehubble.com
+Dossier-Link: ${dossierShareLink || "—"}
 
 ---
 Automatisch gesendet von doerter.immobilien
@@ -79,7 +111,7 @@ Automatisch gesendet von doerter.immobilien
 
 // ═══════ E-MAIL: Bestätigung an den Kunden ═══════
 async function sendCustomerEmail(data) {
-  const { firstName, lastName, email, address, dealType, valuation } = data;
+  const { firstName, lastName, email, address, dealType, valuation, dossierShareLink } = data;
 
   const dealLabel = dealType === "sale" ? "Verkauf" : "Vermietung";
 
@@ -97,6 +129,15 @@ async function sendCustomerEmail(data) {
       </p>`;
   }
 
+  let dossierLinkHtml = "";
+  if (dossierShareLink) {
+    dossierLinkHtml = `
+      <div style="background:#f5f0eb;border-radius:12px;padding:20px 24px;margin:24px 0;text-align:center;">
+        <p style="font-size:14px;color:#3D3833;margin:0 0 12px;">Ihr pers&ouml;nliches Bewertungsdossier:</p>
+        <a href="${dossierShareLink}" style="font-size:15px;color:#34523A;font-weight:600;text-decoration:underline;">Dossier &ouml;ffnen &rarr;</a>
+      </div>`;
+  }
+
   const html = `
 <!DOCTYPE html>
 <html lang="de">
@@ -106,6 +147,10 @@ async function sendCustomerEmail(data) {
     <div style="background:#ffffff;border-radius:16px;padding:48px 36px;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
 
       <div style="text-align:center;margin-bottom:32px;">
+        <img src="${DOERTER_LOGO}" alt="DOERTER Immobilien" style="height:40px;width:auto;" />
+      </div>
+
+      <div style="text-align:center;margin-bottom:24px;">
         <div style="display:inline-block;width:48px;height:48px;background:#34523A;border-radius:50%;line-height:48px;font-size:24px;color:#fff;">&#10003;</div>
       </div>
 
@@ -118,6 +163,8 @@ async function sendCustomerEmail(data) {
 
       ${valuationHtml}
 
+      ${dossierLinkHtml}
+
       <h2 style="font-size:16px;font-weight:700;color:#2A2A2A;margin:32px 0 12px;">N&auml;chste Schritte</h2>
       <ol style="font-size:14px;color:#3D3833;line-height:1.8;padding-left:20px;margin:0 0 32px;">
         <li>Wir pr&uuml;fen Ihre Angaben und erstellen eine detaillierte Analyse.</li>
@@ -125,10 +172,17 @@ async function sendCustomerEmail(data) {
         <li>Bei Fragen stehen wir Ihnen jederzeit zur Verf&uuml;gung.</li>
       </ol>
 
-      <div style="text-align:center;margin:32px 0 0;">
+      <div style="text-align:center;margin:24px 0 0;">
         <a href="https://doerter.com/privatverkauf-ousmexqg"
            style="display:inline-block;padding:14px 32px;background:#34523A;color:#ffffff;border-radius:8px;font-size:15px;font-weight:600;text-decoration:none;">
-          Verk&auml;ufer-Quiz starten
+          Verkaufsanalyse starten
+        </a>
+      </div>
+
+      <div style="text-align:center;margin:16px 0 0;">
+        <a href="${CALENDLY_URL}"
+           style="display:inline-block;padding:14px 32px;background:#ffffff;color:#34523A;border:2px solid #34523A;border-radius:8px;font-size:15px;font-weight:600;text-decoration:none;">
+          Kostenlose Erstberatung buchen
         </a>
       </div>
 
@@ -188,7 +242,7 @@ export const handler = async (event) => {
 
     const token = await getToken();
 
-    // ═══════ NEUER FLOW: Dossier + Valuation + E-Mails in einem Call ═══════
+    // ═══════ NEUER FLOW: Dossier + Valuation + Sharing + E-Mails ═══════
     if (action === "createDossier") {
       // Schritt 1: Dossier erstellen
       const dossierRes = await fetch(`${PH_BASE}/api/v1/dossiers`, {
@@ -210,7 +264,7 @@ export const handler = async (event) => {
 
       const dossierId = dossierData.id || dossierData.dossierId;
 
-      // Schritt 2: Valuation abrufen (optional – wenn fehlschlägt, geht der Rest trotzdem weiter)
+      // Schritt 2: Valuation abrufen (optional)
       let valuation = null;
       try {
         const valRes = await fetch(`${PH_BASE}/api/v1/valuation/property_value`, {
@@ -240,9 +294,17 @@ export const handler = async (event) => {
         console.log("Valuation error (non-critical):", e.message);
       }
 
-      // Schritt 3: E-Mails senden
+      // Schritt 3: Dossier-Sharing-Link generieren (optional)
+      let dossierShareLink = null;
+      try {
+        dossierShareLink = await getDossierShareLink(dossierId, token);
+      } catch (e) {
+        console.log("Dossier share link error (non-critical):", e.message);
+      }
+
+      // Schritt 4: E-Mails senden
       if (contactData) {
-        const emailData = { ...contactData, dossierId, valuation };
+        const emailData = { ...contactData, dossierId, valuation, dossierShareLink };
 
         // Parallel: Benachrichtigung an DOERTER + Bestätigung an Kunden
         await Promise.all([
@@ -251,13 +313,14 @@ export const handler = async (event) => {
         ]);
       }
 
-      // Schritt 4: Alles zurückgeben
+      // Schritt 5: Alles zurückgeben
       return {
         statusCode: 200,
         headers,
         body: JSON.stringify({
           ...dossierData,
           valuation,
+          dossierShareLink,
         }),
       };
     }
