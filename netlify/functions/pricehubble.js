@@ -247,9 +247,9 @@ export const handler = async (event) => {
     // ═══════ NEUER FLOW: Dossier + Valuation + Sharing + E-Mails ═══════
     if (action === "createDossier") {
       // dealType aus Dossier-Payload entfernen (PH akzeptiert es nicht bei allen Immobilientypen)
-      const { dealType: dossierDealType, currency: _c, countryCode: _cc, ...dossierPayload } = payload;
+      const { dealType: _dt, currency: _c, ...dossierPayload } = payload;
 
-      // Schritt 1: Dossier erstellen (ohne dealType/currency/countryCode)
+      // Schritt 1: Dossier erstellen (ohne dealType/currency)
       const dossierRes = await fetch(`${PH_BASE}/api/v1/dossiers`, {
         method: "POST",
         headers: {
