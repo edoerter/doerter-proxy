@@ -54,7 +54,8 @@ async function sendNotificationEmail(data) {
   let valuationText = "Bewertung: noch nicht verfügbar";
   if (valuation && valuation.value) {
     const fmt = (n) => new Intl.NumberFormat("de-DE").format(Math.round(n));
-    valuationText = `Bewertung: ${fmt(valuation.value)} EUR (Spanne: ${fmt(valuation.valueRange.lower)} – ${fmt(valuation.valueRange.upper)} EUR)`;
+    const suffix = dealType === "Vermietung" || dealType === "rent" ? " EUR/Monat" : " EUR";
+    valuationText = `Bewertung: ${fmt(valuation.value)}${suffix} (Spanne: ${fmt(valuation.valueRange.lower)} – ${fmt(valuation.valueRange.upper)}${suffix})`;
   }
 
   const body = `
@@ -113,7 +114,9 @@ Automatisch gesendet von doerter.immobilien
 async function sendCustomerEmail(data) {
   const { firstName, lastName, email, address, dealType, valuation, dossierShareLink } = data;
 
-  const dealLabel = dealType === "sale" ? "Verkauf" : "Vermietung";
+  const isRent = dealType === "rent" || dealType === "Vermietung";
+  const dealLabel = isRent ? "Vermietung" : "Verkauf";
+  const unitLabel = isRent ? "&euro; / Monat" : "&euro;";
 
   let valuationHtml = "";
   if (valuation && valuation.value) {
@@ -121,8 +124,8 @@ async function sendCustomerEmail(data) {
     valuationHtml = `
       <div style="background:#f5f0eb;border-radius:12px;padding:28px;margin:24px 0;text-align:center;">
         <p style="font-size:14px;color:#878787;margin:0 0 8px;">Erste Preisindikation (${dealLabel})</p>
-        <p style="font-size:36px;font-weight:700;color:#34523A;margin:0;">${fmt(valuation.value)} &euro;</p>
-        <p style="font-size:14px;color:#878787;margin:8px 0 0;">Spanne: ${fmt(valuation.valueRange.lower)} &ndash; ${fmt(valuation.valueRange.upper)} &euro;</p>
+        <p style="font-size:36px;font-weight:700;color:#34523A;margin:0;">${fmt(valuation.value)} ${unitLabel}</p>
+        <p style="font-size:14px;color:#878787;margin:8px 0 0;">Spanne: ${fmt(valuation.valueRange.lower)} &ndash; ${fmt(valuation.valueRange.upper)} ${unitLabel}</p>
       </div>
       <p style="font-size:13px;color:#878787;margin:0 0 24px;text-align:center;">
         Diese Indikation basiert auf Marktdaten und ersetzt keine professionelle Bewertung vor Ort.
@@ -234,7 +237,6 @@ export const handler = async (event) => {
   try {
     const { action, payload, contactData } = JSON.parse(event.body);
 
-    // Nur E-Mail senden, kein PH-Aufruf
     if (action === "sendNotification") {
       await sendNotificationEmail(payload);
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
@@ -244,14 +246,17 @@ export const handler = async (event) => {
 
     // ═══════ NEUER FLOW: Dossier + Valuation + Sharing + E-Mails ═══════
     if (action === "createDossier") {
-      // Schritt 1: Dossier erstellen
+      // dealType aus Dossier-Payload entfernen (PH akzeptiert es nicht bei allen Immobilientypen)
+      const { dealType: dossierDealType, currency: _c, countryCode: _cc, ...dossierPayload } = payload;
+
+      // Schritt 1: Dossier erstellen (ohne dealType/currency/countryCode)
       const dossierRes = await fetch(`${PH_BASE}/api/v1/dossiers`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer " + token,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(dossierPayload),
       });
 
       const dossierText = await dossierRes.text();
@@ -306,7 +311,6 @@ export const handler = async (event) => {
       if (contactData) {
         const emailData = { ...contactData, dossierId, valuation, dossierShareLink };
 
-        // Parallel: Benachrichtigung an DOERTER + Bestätigung an Kunden
         await Promise.all([
           sendNotificationEmail(emailData),
           sendCustomerEmail(emailData),
@@ -325,7 +329,7 @@ export const handler = async (event) => {
       };
     }
 
-    // Standalone Valuation (falls separat aufgerufen)
+    // Standalone Valuation
     if (action === "getValuation") {
       const phRes = await fetch(`${PH_BASE}/api/v1/valuation/property_value`, {
         method: "POST",
