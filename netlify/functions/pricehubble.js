@@ -246,7 +246,7 @@ async function sendImmediateEmail(data) {
       </p>
     </div>
     <p style="font-size:12px;color:#878787;text-align:center;margin:24px 0 0;">
-      DOERTER Immobilien &middot; doerter.immobilien
+      DOERTER &middot; privatverkaufen.de
     </p>
   </div>
 </body></html>`.trim();
@@ -259,7 +259,7 @@ async function sendImmediateEmail(data) {
         Authorization: "Bearer " + (process.env.RESEND_API_KEY || ""),
       },
       body: JSON.stringify({
-        from: "Doerter Immobilien <bewertung@doerter.immobilien>",
+        from: "DOERTER <bewertung@doerter.immobilien>",
         to: email,
         subject: `Ihre Bewertung: ${address} – ${valuation ? fmt(valuation.value) + " EUR" : "wird erstellt"}`,
         html,
@@ -288,7 +288,7 @@ async function sendNotificationEmail(data) {
   }
 
   const body = `
-Neue Immobilienbewertungsanfrage \u00FCber doerter.immobilien
+Neue Immobilienbewertungsanfrage \u00FCber privatverkaufen.de
 
 KONTAKT: ${firstName} ${lastName} | ${email} | ${phone || "\u2014"}
 IMMOBILIE: ${propType} | ${dealType} | ${address} | ${area} m\u00B2 | Bj. ${year} | ${rooms} Zi.
@@ -305,7 +305,7 @@ Dashboard: https://dash.pricehubble.com`.trim();
         Authorization: "Bearer " + (process.env.RESEND_API_KEY || ""),
       },
       body: JSON.stringify({
-        from: "Doerter Immobilien <bewertung@doerter.immobilien>",
+        from: "DOERTER <bewertung@doerter.immobilien>",
         to: "info@doerter.com",
         subject,
         text: body,
