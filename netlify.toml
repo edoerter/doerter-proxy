@@ -1,5 +1,13 @@
 [build]
-  functions = "netlify/functions"
+  command = "npm install"
+  publish = "."
 
 [functions]
+  directory = "netlify/functions"
   node_bundler = "esbuild"
+  included_files = ["assets/**"]
+  external_node_modules = ["@sparticuz/chromium"]
+
+# Background Function: bis 15 Min Laufzeit für Puppeteer + PDF-Merge
+[functions."send-dossier-background"]
+  external_node_modules = ["@sparticuz/chromium"]
