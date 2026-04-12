@@ -160,7 +160,6 @@ async function createPipedriveLead(data) {
     const leadBody = {
       title: `Bewertung: ${address}`,
       person_id: personId,
-      note: noteContent,
     };
     if (valuation) {
       leadBody.value = { amount: valuation.value, currency: "EUR" };
@@ -179,6 +178,21 @@ async function createPipedriveLead(data) {
     const leadData = JSON.parse(leadText);
     const leadId = leadData?.data?.id;
     console.log("Pipedrive Lead:", leadId);
+
+    // 3. Note zum Lead hinzufügen (Leads API hat kein note-Feld)
+    try {
+      await fetch(`${pipBase}/notes${qs}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          lead_id: leadId,
+          content: noteContent,
+        }),
+      });
+      console.log("Pipedrive Note: erstellt");
+    } catch (noteErr) {
+      console.log("Pipedrive Note error:", noteErr.message);
+    }
 
     return { personId, leadId };
   } catch (e) {
@@ -426,19 +440,15 @@ export const handler = async (event) => {
         return { statusCode: 200, headers, body: JSON.stringify({ error: "PIPEDRIVE_API_KEY nicht gesetzt", keyExists: false }) };
       }
       try {
-        const meRes = await fetch(`https://api.pipedrive.com/v1/users/me?api_token=${apiKey}`);
-        const meText = await meRes.text();
-        let meData;
-        try { meData = JSON.parse(meText); } catch (_) { meData = { raw: meText }; }
+        const qs = `?api_token=${apiKey}`;
+        const meRes = await fetch(`https://api.pipedrive.com/v1/users/me${qs}`);
+        const meData = await meRes.json().catch(() => ({}));
 
-        const testLeadRes = await fetch(`https://api.pipedrive.com/v1/leads?api_token=${apiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "API-Test Lead (kann gelöscht werden)" }),
-        });
-        const testLeadText = await testLeadRes.text();
-        let testLeadData;
-        try { testLeadData = JSON.parse(testLeadText); } catch (_) { testLeadData = { raw: testLeadText }; }
+        const leadsRes = await fetch(`https://api.pipedrive.com/v1/leads${qs}&limit=10&sort=add_time DESC`);
+        const leadsData = await leadsRes.json().catch(() => ({}));
+
+        const personsRes = await fetch(`https://api.pipedrive.com/v1/persons${qs}&limit=5&sort=add_time DESC`);
+        const personsData = await personsRes.json().catch(() => ({}));
 
         return {
           statusCode: 200,
@@ -447,15 +457,15 @@ export const handler = async (event) => {
             keyExists: true,
             keyPrefix: apiKey.substring(0, 4) + "...",
             keySuffix: "..." + apiKey.slice(-4),
-            userTest: { status: meRes.status, ok: meRes.ok, data: meData },
-            leadTest: { status: testLeadRes.status, ok: testLeadRes.ok, data: testLeadData },
+            userTest: { status: meRes.status, ok: meRes.ok, name: meData?.data?.name },
+            leads: { count: leadsData?.data?.length || 0, items: (leadsData?.data || []).map(l => ({ id: l.id, title: l.title, add_time: l.add_time })) },
+            persons: { count: personsData?.data?.length || 0, items: (personsData?.data || []).map(p => ({ id: p.id, name: p.name, add_time: p.add_time })) },
           }),
         };
       } catch (e) {
         return { statusCode: 200, headers, body: JSON.stringify({ error: e.message, keyExists: true }) };
       }
     }
-
 return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
   } catch (err) {
     console.log("Exception:", err.message, err.stack);
