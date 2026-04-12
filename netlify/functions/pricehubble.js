@@ -96,7 +96,7 @@ async function getDossierValuation(dossierId, dealType, token) {
   }
 }
 
-// ═══════ PIPEDRIVE: Person + Deal anlegen ═══════
+// ═══════ PIPEDRIVE: Person + Lead anlegen ═══════
 async function createPipedriveLead(data) {
   const apiKey = process.env.PIPEDRIVE_API_KEY;
   if (!apiKey) {
@@ -125,62 +125,62 @@ async function createPipedriveLead(data) {
         phone: phone ? [{ value: phone, primary: true }] : undefined,
       }),
     });
-    const personData = await personRes.json();
+    const personText = await personRes.text();
+    if (!personRes.ok) {
+      console.log("Pipedrive Person FEHLER:", personRes.status, personText);
+      return null;
+    }
+    const personData = JSON.parse(personText);
     const personId = personData?.data?.id;
     console.log("Pipedrive Person:", personId);
 
-    // 2. Deal anlegen
+    // 2. Lead anlegen (statt Deal — Leads landen im Leads-Inbox)
     let valuationNote = "Bewertung: nicht verfügbar";
     if (valuation) {
       const suffix = dealType === "rent" || dealType === "Vermietung" ? " EUR/Monat" : " EUR";
       valuationNote = `Bewertung: ${fmt(valuation.value)}${suffix} (${fmt(valuation.valueRange.lower)} – ${fmt(valuation.valueRange.upper)}${suffix})`;
     }
 
-    const dealRes = await fetch(`${pipBase}/deals${qs}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        title: `Bewertung: ${address}`,
-        person_id: personId,
-        value: valuation ? valuation.value : undefined,
-        currency: "EUR",
-        stage_id: 1, // Anpassen an eure Pipeline
-      }),
-    });
-    const dealData = await dealRes.json();
-    const dealId = dealData?.data?.id;
-    console.log("Pipedrive Deal:", dealId);
+    const noteContent = [
+      `Immobilienbewertung via privatverkaufen.de`,
+      ``,
+      `Immobilie:`,
+      `Adresse: ${address}`,
+      `Typ: ${propType} | Transaktion: ${dealType}`,
+      `Fläche: ${area} m² | Baujahr: ${year} | Zimmer: ${rooms}`,
+      ``,
+      `${valuationNote}`,
+      `Confidence: ${valuation?.confidence || "—"}`,
+      ``,
+      `PriceHubble:`,
+      `Dossier-ID: ${dossierId || "—"}`,
+      `Dossier-Link: ${dossierShareLink || "—"}`,
+    ].join("\n");
 
-    // 3. Notiz mit allen Details
-    if (dealId) {
-      const noteContent = [
-        `<b>Immobilienbewertung via doerter.immobilien</b>`,
-        ``,
-        `<b>Immobilie:</b>`,
-        `Adresse: ${address}`,
-        `Typ: ${propType} | Transaktion: ${dealType}`,
-        `Fläche: ${area} m² | Baujahr: ${year} | Zimmer: ${rooms}`,
-        ``,
-        `<b>${valuationNote}</b>`,
-        `Confidence: ${valuation?.confidence || "—"}`,
-        ``,
-        `<b>PriceHubble:</b>`,
-        `Dossier-ID: ${dossierId || "—"}`,
-        `Dossier-Link: ${dossierShareLink || "—"}`,
-      ].join("<br>");
-
-      await fetch(`${pipBase}/notes${qs}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          deal_id: dealId,
-          content: noteContent,
-          pinned_to_deal_flag: 1,
-        }),
-      });
+    const leadBody = {
+      title: `Bewertung: ${address}`,
+      person_id: personId,
+      note: noteContent,
+    };
+    if (valuation) {
+      leadBody.value = { amount: valuation.value, currency: "EUR" };
     }
 
-    return { personId, dealId };
+    const leadRes = await fetch(`${pipBase}/leads${qs}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(leadBody),
+    });
+    const leadText = await leadRes.text();
+    if (!leadRes.ok) {
+      console.log("Pipedrive Lead FEHLER:", leadRes.status, leadText);
+      return null;
+    }
+    const leadData = JSON.parse(leadText);
+    const leadId = leadData?.data?.id;
+    console.log("Pipedrive Lead:", leadId);
+
+    return { personId, leadId };
   } catch (e) {
     console.log("Pipedrive error (non-critical):", e.message);
     return null;
@@ -378,8 +378,12 @@ export const handler = async (event) => {
           sendNotificationEmail(emailData),
         ]);
 
-        // 1e. Pipedrive (parallel, non-blocking)
-        createPipedriveLead(emailData).catch((e) => console.log("Pipedrive async error:", e.message));
+        // 1e. Pipedrive (muss awaited werden, sonst terminiert Netlify die Funktion vorher)
+        try {
+          await createPipedriveLead(emailData);
+        } catch (e) {
+          console.log("Pipedrive error (non-critical):", e.message);
+        }
       }
 
       // ── SCHRITT 2: Background Function triggern ──
