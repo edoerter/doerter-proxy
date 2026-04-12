@@ -1,10 +1,30 @@
+// ═══════════════════════════════════════════════════════════════════════
+// DOERTER Immobilienbewertung — Netlify Function v4
+//
+// Ablauf:
+//   Schritt 1 (sofort): Dossier + Valuation + Sofort-E-Mail + Pipedrive
+//   Schritt 2 (Background): send-dossier-background.js rendert PH-PDF,
+//             baut Broschüre + Bewertungsseite, sendet E-Mail (12 Min delay)
+//
+// Architektur:
+//   - Diese Funktion: leichtgewichtig, antwortet sofort
+//   - Background Function: schwer (Puppeteer + PDF-Merge), bis 15 Min
+// ═══════════════════════════════════════════════════════════════════════
+
+// ═══════ CONFIG ═══════
 const PH_BASE = "https://api.pricehubble.com";
 const PH_USER = "homea-ph-api";
 const PH_PASS = "PsgXvbTNKL";
 
-const DOERTER_LOGO = "https://images.squarespace-cdn.com/content/v1/6966679256607617c3d13b73/de0d3c50-8cef-41f6-b3be-bbfd33b3fa96/Design+ohne+Titel+%2812%29.png?format=300w";
-const CALENDLY_URL = "https://calendly.com/erten-doerter/kostenlose-erstberatung-30-minuten-klon";
+const DOERTER_LOGO =
+  "https://images.squarespace-cdn.com/content/v1/6966679256607617c3d13b73/de0d3c50-8cef-41f6-b3be-bbfd33b3fa96/Design+ohne+Titel+%2812%29.png?format=300w";
+const CALENDLY_URL =
+  "https://calendly.com/erten-doerter/kostenlose-erstberatung-30-minuten-klon";
 
+// ═══════ HELPERS ═══════
+const fmt = (n) => new Intl.NumberFormat("de-DE").format(Math.round(n));
+
+// ═══════ PRICEHUBBLE AUTH ═══════
 async function getToken() {
   const res = await fetch(`${PH_BASE}/auth/login/credentials`, {
     method: "POST",
@@ -19,7 +39,7 @@ async function getToken() {
 // ═══════ DOSSIER SHARING LINK ═══════
 async function getDossierShareLink(dossierId, token) {
   try {
-    const res = await fetch(`${PH_BASE}/api/v1/dossiers/${dossierId}/sharing`, {
+    const res = await fetch(`${PH_BASE}/api/v1/dossiers/links`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -29,69 +49,256 @@ async function getDossierShareLink(dossierId, token) {
         dossierId,
         daysToLive: 90,
         countryCode: "DE",
-        locale: "de",
+        locale: "de_DE",
+        canGeneratePdf: true,
       }),
     });
     if (res.ok) {
       const data = await res.json();
-      return data.url || data.shareUrl || data.link || null;
+      return data.url || null;
     }
-    console.log("Dossier sharing failed (non-critical):", res.status);
+    console.log("Sharing failed:", res.status, await res.text());
     return null;
   } catch (e) {
-    console.log("Dossier sharing error (non-critical):", e.message);
+    console.log("Sharing error:", e.message);
     return null;
   }
 }
 
-// ═══════ E-MAIL: Benachrichtigung an DOERTER (info@doerter.com) ═══════
+// ═══════ DOSSIER VALUATION ═══════
+async function getDossierValuation(dossierId, dealType, token) {
+  try {
+    const res = await fetch(`${PH_BASE}/api/v1/dossiers/${dossierId}/valuation`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!res.ok) {
+      console.log("Valuation failed:", res.status);
+      return null;
+    }
+    const data = await res.json();
+    const isRent = dealType === "rent" || dealType === "Vermietung";
+    const raw = isRent
+      ? data.valuationRentGross || data.valuationRentNet
+      : data.valuationSale;
+    if (raw && raw.value) {
+      return {
+        value: raw.value,
+        valueRange: raw.valueRange || { lower: raw.value * 0.9, upper: raw.value * 1.1 },
+        confidence: raw.valuationConfidence || "unknown",
+        date: raw.valuationDate || new Date().toISOString().split("T")[0],
+      };
+    }
+    return null;
+  } catch (e) {
+    console.log("Valuation error:", e.message);
+    return null;
+  }
+}
+
+// ═══════ PIPEDRIVE: Person + Deal anlegen ═══════
+async function createPipedriveLead(data) {
+  const apiKey = process.env.PIPEDRIVE_API_KEY;
+  if (!apiKey) {
+    console.log("Pipedrive: Kein API-Key, überspringe");
+    return null;
+  }
+
+  const {
+    firstName, lastName, email, phone,
+    address, propType, dealType, area, year, rooms,
+    dossierId, valuation, dossierShareLink,
+  } = data;
+
+  const pipBase = "https://api.pipedrive.com/v1";
+  const headers = { "Content-Type": "application/json" };
+  const qs = `?api_token=${apiKey}`;
+
+  try {
+    // 1. Person anlegen
+    const personRes = await fetch(`${pipBase}/persons${qs}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: `${firstName} ${lastName}`,
+        email: [{ value: email, primary: true }],
+        phone: phone ? [{ value: phone, primary: true }] : undefined,
+      }),
+    });
+    const personData = await personRes.json();
+    const personId = personData?.data?.id;
+    console.log("Pipedrive Person:", personId);
+
+    // 2. Deal anlegen
+    let valuationNote = "Bewertung: nicht verfügbar";
+    if (valuation) {
+      const suffix = dealType === "rent" || dealType === "Vermietung" ? " EUR/Monat" : " EUR";
+      valuationNote = `Bewertung: ${fmt(valuation.value)}${suffix} (${fmt(valuation.valueRange.lower)} – ${fmt(valuation.valueRange.upper)}${suffix})`;
+    }
+
+    const dealRes = await fetch(`${pipBase}/deals${qs}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: `Bewertung: ${address}`,
+        person_id: personId,
+        value: valuation ? valuation.value : undefined,
+        currency: "EUR",
+        stage_id: 1, // Anpassen an eure Pipeline
+      }),
+    });
+    const dealData = await dealRes.json();
+    const dealId = dealData?.data?.id;
+    console.log("Pipedrive Deal:", dealId);
+
+    // 3. Notiz mit allen Details
+    if (dealId) {
+      const noteContent = [
+        `<b>Immobilienbewertung via doerter.immobilien</b>`,
+        ``,
+        `<b>Immobilie:</b>`,
+        `Adresse: ${address}`,
+        `Typ: ${propType} | Transaktion: ${dealType}`,
+        `Fläche: ${area} m² | Baujahr: ${year} | Zimmer: ${rooms}`,
+        ``,
+        `<b>${valuationNote}</b>`,
+        `Confidence: ${valuation?.confidence || "—"}`,
+        ``,
+        `<b>PriceHubble:</b>`,
+        `Dossier-ID: ${dossierId || "—"}`,
+        `Dossier-Link: ${dossierShareLink || "—"}`,
+      ].join("<br>");
+
+      await fetch(`${pipBase}/notes${qs}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          deal_id: dealId,
+          content: noteContent,
+          pinned_to_deal_flag: 1,
+        }),
+      });
+    }
+
+    return { personId, dealId };
+  } catch (e) {
+    console.log("Pipedrive error (non-critical):", e.message);
+    return null;
+  }
+}
+
+// ═══════ BACKGROUND FUNCTION TRIGGER ═══════
+async function triggerDossierBackground(data) {
+  const siteUrl = process.env.URL || process.env.DEPLOY_URL || "https://doerter-bewertung.netlify.app";
+  const bgUrl = `${siteUrl}/.netlify/functions/send-dossier-background`;
+
+  try {
+    const res = await fetch(bgUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    console.log("Background Function getriggert:", res.status);
+    return res.status === 202 || res.ok;
+  } catch (e) {
+    console.log("Background Function trigger error:", e.message);
+    return false;
+  }
+}
+
+// ═══════ E-MAIL 1: Sofortige Bestätigung (kurz, mit Preis) ═══════
+async function sendImmediateEmail(data) {
+  const { firstName, email, address, dealType, valuation } = data;
+
+  const isRent = dealType === "rent" || dealType === "Vermietung";
+  const unitLabel = isRent ? "&euro; / Monat" : "&euro;";
+
+  let valuationHtml = "";
+  if (valuation) {
+    valuationHtml = `
+      <div style="background:#f5f0eb;border-radius:12px;padding:28px;margin:24px 0;text-align:center;">
+        <p style="font-size:14px;color:#878787;margin:0 0 8px;">Erste Preisindikation</p>
+        <p style="font-size:36px;font-weight:700;color:#34523A;margin:0;">${fmt(valuation.value)} ${unitLabel}</p>
+        <p style="font-size:14px;color:#878787;margin:8px 0 0;">Spanne: ${fmt(valuation.valueRange.lower)} &ndash; ${fmt(valuation.valueRange.upper)} ${unitLabel}</p>
+      </div>`;
+  }
+
+  const html = `
+<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;background:#f5f0eb;">
+  <div style="max-width:560px;margin:0 auto;padding:40px 24px;">
+    <div style="background:#fff;border-radius:16px;padding:48px 36px;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+      <div style="text-align:center;margin-bottom:32px;">
+        <img src="${DOERTER_LOGO}" alt="DOERTER" style="height:40px;width:auto;" />
+      </div>
+      <div style="text-align:center;margin-bottom:24px;">
+        <div style="display:inline-block;width:48px;height:48px;background:#34523A;border-radius:50%;line-height:48px;font-size:24px;color:#fff;">&#10003;</div>
+      </div>
+      <h1 style="font-size:22px;font-weight:700;color:#2A2A2A;text-align:center;margin:0 0 8px;">
+        Vielen Dank, ${firstName}!
+      </h1>
+      <p style="font-size:15px;color:#3D3833;text-align:center;line-height:1.6;margin:0 0 24px;">
+        Wir haben Ihre Bewertungsanfrage f&uuml;r <strong>${address}</strong> erhalten.
+      </p>
+      ${valuationHtml}
+      <p style="font-size:13px;color:#878787;text-align:center;margin:0 0 24px;">
+        In K&uuml;rze erhalten Sie Ihr ausf&uuml;hrliches Bewertungsdossier per E-Mail.
+      </p>
+    </div>
+    <p style="font-size:12px;color:#878787;text-align:center;margin:24px 0 0;">
+      DOERTER Immobilien &middot; doerter.immobilien
+    </p>
+  </div>
+</body></html>`.trim();
+
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + (process.env.RESEND_API_KEY || ""),
+      },
+      body: JSON.stringify({
+        from: "Doerter Immobilien <bewertung@doerter.immobilien>",
+        to: email,
+        subject: `Ihre Bewertung: ${address} – ${valuation ? fmt(valuation.value) + " EUR" : "wird erstellt"}`,
+        html,
+      }),
+    });
+    console.log("Sofort-E-Mail gesendet:", res.status);
+  } catch (e) {
+    console.log("Sofort-E-Mail error:", e.message);
+  }
+}
+
+// ═══════ E-MAIL: Interne Benachrichtigung an DOERTER ═══════
 async function sendNotificationEmail(data) {
-  const { firstName, lastName, email, phone,
-    address, propType, dealType, area, year, rooms, dossierId, valuation, dossierShareLink } = data;
+  const {
+    firstName, lastName, email, phone,
+    address, propType, dealType, area, year, rooms,
+    dossierId, valuation, dossierShareLink,
+  } = data;
 
-  const subject = `Neue Bewertungsanfrage: ${firstName} ${lastName} — ${address}`;
+  const subject = `Neue Bewertungsanfrage: ${firstName} ${lastName} \u2014 ${address}`;
 
-  let valuationText = "Bewertung: noch nicht verfügbar";
-  if (valuation && valuation.value) {
-    const fmt = (n) => new Intl.NumberFormat("de-DE").format(Math.round(n));
+  let valuationText = "Bewertung: noch nicht verf\u00FCgbar";
+  if (valuation) {
     const suffix = dealType === "Vermietung" || dealType === "rent" ? " EUR/Monat" : " EUR";
-    valuationText = `Bewertung: ${fmt(valuation.value)}${suffix} (Spanne: ${fmt(valuation.valueRange.lower)} – ${fmt(valuation.valueRange.upper)}${suffix})`;
+    valuationText = `Bewertung: ${fmt(valuation.value)}${suffix} (${fmt(valuation.valueRange.lower)} \u2013 ${fmt(valuation.valueRange.upper)}${suffix})`;
   }
 
   const body = `
-Neue Immobilienbewertungsanfrage über doerter.immobilien
+Neue Immobilienbewertungsanfrage \u00FCber doerter.immobilien
 
-KONTAKT
--------
-Name:     ${firstName} ${lastName}
-E-Mail:   ${email}
-Telefon:  ${phone || "—"}
-
-IMMOBILIE
----------
-Typ:        ${propType}
-Transaktion: ${dealType}
-Adresse:    ${address}
-Wohnfläche: ${area} m²
-Baujahr:    ${year}
-Zimmer:     ${rooms}
-
-BEWERTUNG
----------
+KONTAKT: ${firstName} ${lastName} | ${email} | ${phone || "\u2014"}
+IMMOBILIE: ${propType} | ${dealType} | ${address} | ${area} m\u00B2 | Bj. ${year} | ${rooms} Zi.
 ${valuationText}
-
-PRICEHUBBLE
------------
-Dossier-ID:  ${dossierId || "—"}
-Dashboard:   https://dash.pricehubble.com
-Dossier-Link: ${dossierShareLink || "—"}
-
----
-Automatisch gesendet von doerter.immobilien
-`.trim();
+Dossier-ID: ${dossierId || "\u2014"}
+Dossier-Link: ${dossierShareLink || "\u2014"}
+Dashboard: https://dash.pricehubble.com`.trim();
 
   try {
-    const emailRes = await fetch("https://api.resend.com/emails", {
+    await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -104,118 +311,8 @@ Automatisch gesendet von doerter.immobilien
         text: body,
       }),
     });
-    console.log("Notification email sent:", emailRes.status);
   } catch (e) {
-    console.log("Notification email error (non-critical):", e.message);
-  }
-}
-
-// ═══════ E-MAIL: Bestätigung an den Kunden ═══════
-async function sendCustomerEmail(data) {
-  const { firstName, lastName, email, address, dealType, valuation, dossierShareLink } = data;
-
-  const isRent = dealType === "rent" || dealType === "Vermietung";
-  const dealLabel = isRent ? "Vermietung" : "Verkauf";
-  const unitLabel = isRent ? "&euro; / Monat" : "&euro;";
-
-  let valuationHtml = "";
-  if (valuation && valuation.value) {
-    const fmt = (n) => new Intl.NumberFormat("de-DE").format(Math.round(n));
-    valuationHtml = `
-      <div style="background:#f5f0eb;border-radius:12px;padding:28px;margin:24px 0;text-align:center;">
-        <p style="font-size:14px;color:#878787;margin:0 0 8px;">Erste Preisindikation (${dealLabel})</p>
-        <p style="font-size:36px;font-weight:700;color:#34523A;margin:0;">${fmt(valuation.value)} ${unitLabel}</p>
-        <p style="font-size:14px;color:#878787;margin:8px 0 0;">Spanne: ${fmt(valuation.valueRange.lower)} &ndash; ${fmt(valuation.valueRange.upper)} ${unitLabel}</p>
-      </div>
-      <p style="font-size:13px;color:#878787;margin:0 0 24px;text-align:center;">
-        Diese Indikation basiert auf Marktdaten und ersetzt keine professionelle Bewertung vor Ort.
-      </p>`;
-  }
-
-  let dossierLinkHtml = "";
-  if (dossierShareLink) {
-    dossierLinkHtml = `
-      <div style="background:#f5f0eb;border-radius:12px;padding:20px 24px;margin:24px 0;text-align:center;">
-        <p style="font-size:14px;color:#3D3833;margin:0 0 12px;">Ihr pers&ouml;nliches Bewertungsdossier:</p>
-        <a href="${dossierShareLink}" style="font-size:15px;color:#34523A;font-weight:600;text-decoration:underline;">Dossier &ouml;ffnen &rarr;</a>
-      </div>`;
-  }
-
-  const html = `
-<!DOCTYPE html>
-<html lang="de">
-<head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;background:#f5f0eb;">
-  <div style="max-width:560px;margin:0 auto;padding:40px 24px;">
-    <div style="background:#ffffff;border-radius:16px;padding:48px 36px;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
-
-      <div style="text-align:center;margin-bottom:32px;">
-        <img src="${DOERTER_LOGO}" alt="DOERTER Immobilien" style="height:40px;width:auto;" />
-      </div>
-
-      <div style="text-align:center;margin-bottom:24px;">
-        <div style="display:inline-block;width:48px;height:48px;background:#34523A;border-radius:50%;line-height:48px;font-size:24px;color:#fff;">&#10003;</div>
-      </div>
-
-      <h1 style="font-size:22px;font-weight:700;color:#2A2A2A;text-align:center;margin:0 0 8px;">
-        Vielen Dank, ${firstName}!
-      </h1>
-      <p style="font-size:15px;color:#3D3833;text-align:center;line-height:1.6;margin:0 0 24px;">
-        Wir haben Ihre Bewertungsanfrage f&uuml;r <strong>${address}</strong> erhalten.
-      </p>
-
-      ${valuationHtml}
-
-      ${dossierLinkHtml}
-
-      <h2 style="font-size:16px;font-weight:700;color:#2A2A2A;margin:32px 0 12px;">N&auml;chste Schritte</h2>
-      <ol style="font-size:14px;color:#3D3833;line-height:1.8;padding-left:20px;margin:0 0 32px;">
-        <li>Wir pr&uuml;fen Ihre Angaben und erstellen eine detaillierte Analyse.</li>
-        <li>Innerhalb von <strong>24 Stunden</strong> erhalten Sie Ihre pers&ouml;nliche Bewertung.</li>
-        <li>Bei Fragen stehen wir Ihnen jederzeit zur Verf&uuml;gung.</li>
-      </ol>
-
-      <div style="text-align:center;margin:24px 0 0;">
-        <a href="https://doerter.com/privatverkauf-ousmexqg"
-           style="display:inline-block;padding:14px 32px;background:#34523A;color:#ffffff;border-radius:8px;font-size:15px;font-weight:600;text-decoration:none;">
-          Verkaufsanalyse starten
-        </a>
-      </div>
-
-      <div style="text-align:center;margin:16px 0 0;">
-        <a href="${CALENDLY_URL}"
-           style="display:inline-block;padding:14px 32px;background:#ffffff;color:#34523A;border:2px solid #34523A;border-radius:8px;font-size:15px;font-weight:600;text-decoration:none;">
-          Kostenlose Erstberatung buchen
-        </a>
-      </div>
-
-    </div>
-
-    <p style="font-size:12px;color:#878787;text-align:center;margin:24px 0 0;line-height:1.5;">
-      DOERTER Immobilien &middot; doerter.immobilien<br>
-      Diese E-Mail wurde automatisch versendet.
-    </p>
-  </div>
-</body>
-</html>`.trim();
-
-  try {
-    const emailRes = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + (process.env.RESEND_API_KEY || ""),
-      },
-      body: JSON.stringify({
-        from: "Doerter Immobilien <bewertung@doerter.immobilien>",
-        to: email,
-        subject: `Ihre Bewertungsanfrage – ${address}`,
-        html,
-      }),
-    });
-    console.log("Customer email sent:", emailRes.status);
-  } catch (e) {
-    console.log("Customer email error (non-critical):", e.message);
+    console.log("Notification error:", e.message);
   }
 }
 
@@ -228,11 +325,8 @@ export const handler = async (event) => {
     "Content-Type": "application/json",
   };
 
-  if (event.httpMethod === "OPTIONS")
-    return { statusCode: 204, headers, body: "" };
-
-  if (event.httpMethod !== "POST")
-    return { statusCode: 405, headers, body: JSON.stringify({ error: "Nur POST erlaubt" }) };
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers, body: "" };
+  if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: JSON.stringify({ error: "Nur POST erlaubt" }) };
 
   try {
     const { action, payload, contactData } = JSON.parse(event.body);
@@ -244,12 +338,13 @@ export const handler = async (event) => {
 
     const token = await getToken();
 
-    // ═══════ NEUER FLOW: Dossier + Valuation + Sharing + E-Mails ═══════
+    // ═══════ HAUPTFLOW: Zwei-Stufen-Prozess ═══════
     if (action === "createDossier") {
-      // dealType aus Dossier-Payload entfernen (PH akzeptiert es nicht bei allen Immobilientypen)
       const { dealType: _dt, currency: _c, ...dossierPayload } = payload;
 
-      // Schritt 1: Dossier erstellen (ohne dealType/currency)
+      // ── SCHRITT 1: Dossier + Valuation + Sofort-E-Mail + Pipedrive ──
+
+      // 1a. Dossier erstellen
       const dossierRes = await fetch(`${PH_BASE}/api/v1/dossiers`, {
         method: "POST",
         headers: {
@@ -258,66 +353,43 @@ export const handler = async (event) => {
         },
         body: JSON.stringify(dossierPayload),
       });
-
       const dossierText = await dossierRes.text();
       let dossierData;
       try { dossierData = JSON.parse(dossierText); } catch (e) { dossierData = { raw: dossierText }; }
-
       if (!dossierRes.ok) {
         return { statusCode: dossierRes.status, headers, body: JSON.stringify({ error: dossierData }) };
       }
-
       const dossierId = dossierData.id || dossierData.dossierId;
+      console.log("Dossier:", dossierId);
 
-      // Schritt 2: Valuation abrufen (optional)
-      let valuation = null;
-      try {
-        const valRes = await fetch(`${PH_BASE}/api/v1/valuation/property_value`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: "Bearer " + token,
-          },
-          body: JSON.stringify({
-            dossierId,
-            dealType: payload.dealType || "sale",
-            countryCode: payload.countryCode || "DE",
-            currency: payload.currency || "EUR",
-            valuationInputs: [{ property: payload.property }],
-          }),
-        });
+      // 1b. Valuation
+      const valuation = await getDossierValuation(dossierId, payload.dealType || "sale", token);
+      console.log("Valuation:", valuation ? `${fmt(valuation.value)} EUR` : "n/a");
 
-        if (valRes.ok) {
-          const valData = await valRes.json();
-          if (valData.valuations && valData.valuations[0] && valData.valuations[0][0]) {
-            valuation = valData.valuations[0][0];
-          }
-        } else {
-          console.log("Valuation failed (non-critical):", valRes.status);
-        }
-      } catch (e) {
-        console.log("Valuation error (non-critical):", e.message);
-      }
+      // 1c. Sharing-Link
+      const dossierShareLink = await getDossierShareLink(dossierId, token);
+      console.log("Share-Link:", dossierShareLink ? "OK" : "n/a");
 
-      // Schritt 3: Dossier-Sharing-Link generieren (optional)
-      let dossierShareLink = null;
-      try {
-        dossierShareLink = await getDossierShareLink(dossierId, token);
-      } catch (e) {
-        console.log("Dossier share link error (non-critical):", e.message);
-      }
-
-      // Schritt 4: E-Mails senden
+      // 1d. Sofort-E-Mail an Kunden + Benachrichtigung an DOERTER
       if (contactData) {
         const emailData = { ...contactData, dossierId, valuation, dossierShareLink };
-
         await Promise.all([
+          sendImmediateEmail(emailData),
           sendNotificationEmail(emailData),
-          sendCustomerEmail(emailData),
         ]);
+
+        // 1e. Pipedrive (parallel, non-blocking)
+        createPipedriveLead(emailData).catch((e) => console.log("Pipedrive async error:", e.message));
       }
 
-      // Schritt 5: Alles zurückgeben
+      // ── SCHRITT 2: Background Function triggern ──
+      if (contactData) {
+        const bgData = { ...contactData, dossierId, valuation, dossierShareLink };
+        const bgTriggered = await triggerDossierBackground(bgData);
+        console.log("Background Function:", bgTriggered ? "gestartet" : "fehlgeschlagen");
+      }
+
+      // Response
       return {
         statusCode: 200,
         headers,
@@ -325,35 +397,27 @@ export const handler = async (event) => {
           ...dossierData,
           valuation,
           dossierShareLink,
+          dossierEmailScheduled: true,
         }),
       };
     }
 
-    // Standalone Valuation
+    // Standalone Valuation (Legacy/Fallback)
     if (action === "getValuation") {
       const phRes = await fetch(`${PH_BASE}/api/v1/valuation/property_value`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + token,
-        },
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify(payload),
       });
-
       const responseText = await phRes.text();
       let data;
       try { data = JSON.parse(responseText); } catch (e) { data = { raw: responseText }; }
-
-      return {
-        statusCode: phRes.ok ? 200 : phRes.status,
-        headers,
-        body: JSON.stringify(data),
-      };
+      return { statusCode: phRes.ok ? 200 : phRes.status, headers, body: JSON.stringify(data) };
     }
 
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
   } catch (err) {
-    console.log("Exception:", err.message);
+    console.log("Exception:", err.message, err.stack);
     return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
   }
 };
