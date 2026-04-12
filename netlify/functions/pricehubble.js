@@ -456,40 +456,6 @@ export const handler = async (event) => {
       try { data = JSON.parse(responseText); } catch (e) { data = { raw: responseText }; }
       return { statusCode: phRes.ok ? 200 : phRes.status, headers, body: JSON.stringify(data) };
     }
-
-        // ═══════ TEST: Pipedrive-Verbindung prüfen ═══════
-    if (action === "testPipedrive") {
-      const apiKey = process.env.PIPEDRIVE_API_KEY;
-      if (!apiKey) {
-        return { statusCode: 200, headers, body: JSON.stringify({ error: "PIPEDRIVE_API_KEY nicht gesetzt", keyExists: false }) };
-      }
-      try {
-        const qs = `?api_token=${apiKey}`;
-        const meRes = await fetch(`https://api.pipedrive.com/v1/users/me${qs}`);
-        const meData = await meRes.json().catch(() => ({}));
-
-        const leadsRes = await fetch(`https://api.pipedrive.com/v1/leads${qs}&limit=10&sort=add_time DESC`);
-        const leadsData = await leadsRes.json().catch(() => ({}));
-
-        const personsRes = await fetch(`https://api.pipedrive.com/v1/persons${qs}&limit=5&sort=add_time DESC`);
-        const personsData = await personsRes.json().catch(() => ({}));
-
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({
-            keyExists: true,
-            keyPrefix: apiKey.substring(0, 4) + "...",
-            keySuffix: "..." + apiKey.slice(-4),
-            userTest: { status: meRes.status, ok: meRes.ok, name: meData?.data?.name },
-            leads: { count: leadsData?.data?.length || 0, items: (leadsData?.data || []).map(l => ({ id: l.id, title: l.title, add_time: l.add_time })) },
-            persons: { count: personsData?.data?.length || 0, items: (personsData?.data || []).map(p => ({ id: p.id, name: p.name, add_time: p.add_time })) },
-          }),
-        };
-      } catch (e) {
-        return { statusCode: 200, headers, body: JSON.stringify({ error: e.message, keyExists: true }) };
-      }
-    }
 return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
   } catch (err) {
     console.log("Exception:", err.message, err.stack);
