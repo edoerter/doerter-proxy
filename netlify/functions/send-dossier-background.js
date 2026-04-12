@@ -303,7 +303,7 @@ async function sendScheduledDossierEmail(data, pdfBase64) {
       </div>
     </div>
     <p style="font-size:12px;color:#878787;text-align:center;margin:24px 0 0;line-height:1.5;">
-      DOERTER Immobilien &middot; doerter.immobilien<br>Diese E-Mail wurde automatisch versendet.
+      DOERTER &middot; privatverkaufen.de<br>Diese E-Mail wurde automatisch versendet.
     </p>
   </div>
 </body></html>`.trim();
@@ -312,7 +312,7 @@ async function sendScheduledDossierEmail(data, pdfBase64) {
   const scheduledAt = new Date(Date.now() + DELAY_MINUTES * 60 * 1000).toISOString();
 
   const emailPayload = {
-    from: "Doerter Immobilien <bewertung@doerter.immobilien>",
+    from: "DOERTER <bewertung@doerter.immobilien>",
     to: email,
     subject: `Ihr Bewertungsdossier: ${address}`,
     html,
