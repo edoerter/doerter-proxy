@@ -353,47 +353,9 @@ export const handler = async (event) => {
     // 1. PH-Token holen
     const token = await getToken();
 
-    // 2. PriceHubble-PDF holen (API-Export oder Puppeteer-Fallback)
-    console.log("Hole PriceHubble-PDF...");
-    let phPdfBuffer = null;
-
-    // Versuch 1: API-basierter PDF-Export
-    try {
-      const pdfApiUrl = `${PH_BASE}/api/v1/dossiers/${dossierId}/pdf`;
-      console.log("Versuche PH API PDF-Export:", pdfApiUrl);
-      const pdfRes = await fetch(pdfApiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          deal_type: dealType || "sale",
-          language: "de",
-          country_code: "DE",
-        }),
-      });
-      if (pdfRes.ok) {
-        const contentType = pdfRes.headers.get("content-type") || "";
-        if (contentType.includes("pdf")) {
-          phPdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
-          console.log("PH API PDF-Export erfolgreich:", Math.round(phPdfBuffer.length / 1024), "KB");
-        } else {
-          console.log("PH API returned non-PDF:", contentType, await pdfRes.text().catch(() => ""));
-          phPdfBuffer = null;
-        }
-      } else {
-        console.log("PH API PDF-Export fehlgeschlagen:", pdfRes.status);
-      }
-    } catch (e) {
-      console.log("PH API PDF-Export error:", e.message);
-    }
-
-    // Versuch 2: Puppeteer-Fallback
-    if (!phPdfBuffer) {
-      console.log("Fallback: Rendere PH-PDF via Puppeteer...");
-      phPdfBuffer = await renderPriceHubblePdf(dossierId, dealType, token);
-    }
+    // 2. PriceHubble-PDF via Puppeteer (dash.pricehubble.com/pdf-report)
+    console.log("Hole PriceHubble-PDF via Puppeteer...");
+    const phPdfBuffer = await renderPriceHubblePdf(dossierId, dealType, token);
 
     // 3. Finales PDF zusammenbauen
     console.log("Baue finales PDF...");
