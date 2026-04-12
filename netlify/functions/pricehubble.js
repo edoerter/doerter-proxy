@@ -419,7 +419,44 @@ export const handler = async (event) => {
       return { statusCode: phRes.ok ? 200 : phRes.status, headers, body: JSON.stringify(data) };
     }
 
-    return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
+        // ═══════ TEST: Pipedrive-Verbindung prüfen ═══════
+    if (action === "testPipedrive") {
+      const apiKey = process.env.PIPEDRIVE_API_KEY;
+      if (!apiKey) {
+        return { statusCode: 200, headers, body: JSON.stringify({ error: "PIPEDRIVE_API_KEY nicht gesetzt", keyExists: false }) };
+      }
+      try {
+        const meRes = await fetch(`https://api.pipedrive.com/v1/users/me?api_token=${apiKey}`);
+        const meText = await meRes.text();
+        let meData;
+        try { meData = JSON.parse(meText); } catch (_) { meData = { raw: meText }; }
+
+        const testLeadRes = await fetch(`https://api.pipedrive.com/v1/leads?api_token=${apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "API-Test Lead (kann gelöscht werden)" }),
+        });
+        const testLeadText = await testLeadRes.text();
+        let testLeadData;
+        try { testLeadData = JSON.parse(testLeadText); } catch (_) { testLeadData = { raw: testLeadText }; }
+
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            keyExists: true,
+            keyPrefix: apiKey.substring(0, 4) + "...",
+            keySuffix: "..." + apiKey.slice(-4),
+            userTest: { status: meRes.status, ok: meRes.ok, data: meData },
+            leadTest: { status: testLeadRes.status, ok: testLeadRes.ok, data: testLeadData },
+          }),
+        };
+      } catch (e) {
+        return { statusCode: 200, headers, body: JSON.stringify({ error: e.message, keyExists: true }) };
+      }
+    }
+
+return { statusCode: 400, headers, body: JSON.stringify({ error: "Unbekannte action: " + action }) };
   } catch (err) {
     console.log("Exception:", err.message, err.stack);
     return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
