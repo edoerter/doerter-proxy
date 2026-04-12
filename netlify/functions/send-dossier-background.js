@@ -4,7 +4,7 @@
 // Wird von pricehubble.js getriggert. Läuft im Hintergrund (bis 15 Min).
 // 1. PriceHubble Dash PDF via Puppeteer rendern
 // 2. In DOERTER-Broschüre einbetten (mit Bewertungsseite)
-// 3. E-Mail mit Resend scheduledAt versenden (12 Min verzögert)
+// 3. E-Mail mit Resend scheduled_at versenden (15 Min verzögert)
 // ═══════════════════════════════════════════════════════════════════════
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -17,7 +17,7 @@ import { resolve } from "path";
 const PH_BASE = "https://api.pricehubble.com";
 const PH_USER = "homea-ph-api";
 const PH_PASS = "PsgXvbTNKL";
-const DELAY_MINUTES = 12;
+const DELAY_MINUTES = 15;
 const INSERT_AFTER_PAGE = 11;
 
 const DOERTER_LOGO =
@@ -74,6 +74,18 @@ async function renderPriceHubblePdf(dossierId, dealType, token) {
     console.log("Puppeteer: Loading PH PDF Report...");
     await page.goto(pdfReportUrl, { waitUntil: "networkidle2", timeout: 60000 });
 
+    // Prüfe ob eine Fehlerseite angezeigt wird
+    const pageText = await page.evaluate(() => document.body?.innerText || "");
+    if (
+      pageText.includes("Seite nicht gefunden") ||
+      pageText.includes("Page not found") ||
+      pageText.includes("404") ||
+      pageText.includes("Error")
+    ) {
+      console.log("Puppeteer: PH returned error page, skipping PH PDF");
+      return null;
+    }
+
     // Warten bis PriceHubble das PDF als "ready" markiert
     try {
       await page.waitForSelector("body.pdfIsReady", { timeout: 30000 });
@@ -82,6 +94,13 @@ async function renderPriceHubblePdf(dossierId, dealType, token) {
       // Fallback: einfach etwas warten
       console.log("Puppeteer: pdfIsReady not found, waiting 10s...");
       await new Promise((r) => setTimeout(r, 10000));
+    }
+
+    // Nochmal prüfen nach dem Warten
+    const finalText = await page.evaluate(() => document.body?.innerText || "");
+    if (finalText.includes("Seite nicht gefunden") || finalText.includes("404")) {
+      console.log("Puppeteer: PH error page after wait, skipping PH PDF");
+      return null;
     }
 
     // PDF rendern
@@ -128,13 +147,13 @@ async function createValuationPage(doc, data) {
   page.drawLine({ start: { x: width - 150, y: height - 158 }, end: { x: width - 55, y: height - 158 }, thickness: 1, color: COLOR_DARK });
 
   // Adresse
-  const addressText = address || "Adresse nicht verf\u00FCgbar";
+  const addressText = address || "Adresse nicht verfügbar";
   const addrW = helveticaBold.widthOfTextAtSize(addressText, 16);
   page.drawText(addressText, { x: centerX - addrW / 2, y: height - 260, size: 16, font: helveticaBold, color: COLOR_DARK });
 
   // Details
-  const parts = [propType, area ? `${area} m\u00B2` : null, rooms ? `${rooms} Zimmer` : null, year ? `Baujahr ${year}` : null].filter(Boolean);
-  const detailText = parts.join("  \u2022  ");
+  const parts = [propType, area ? `${area} m²` : null, rooms ? `${rooms} Zimmer` : null, year ? `Baujahr ${year}` : null].filter(Boolean);
+  const detailText = parts.join("  •  ");
   const detW = helvetica.widthOfTextAtSize(detailText, 11);
   page.drawText(detailText, { x: centerX - detW / 2, y: height - 285, size: 11, font: helvetica, color: COLOR_GRAY });
 
@@ -158,12 +177,12 @@ async function createValuationPage(doc, data) {
     page.drawText(rl, { x: centerX - helvetica.widthOfTextAtSize(rl, 12) / 2, y: height - 520, size: 12, font: helvetica, color: COLOR_GRAY });
     const rbW = 340, rbH = 60, rbX = centerX - rbW / 2, rbY = height - 600;
     page.drawRectangle({ x: rbX, y: rbY, width: rbW, height: rbH, color: COLOR_TAUPE });
-    const rangeText = `${fmt(valuation.valueRange.lower)}  \u2013  ${fmt(valuation.valueRange.upper)} ${unitLabel}`;
+    const rangeText = `${fmt(valuation.valueRange.lower)}  –  ${fmt(valuation.valueRange.upper)} ${unitLabel}`;
     const rW = helveticaBold.widthOfTextAtSize(rangeText, 20);
     page.drawText(rangeText, { x: centerX - rW / 2, y: rbY + 20, size: 20, font: helveticaBold, color: COLOR_WHITE });
 
     const confMap = { good: "Hoch", medium: "Mittel", low: "Gering" };
-    const conf = `Datenqualit\u00E4t: ${confMap[valuation.confidence] || valuation.confidence}`;
+    const conf = `Datenqualität: ${confMap[valuation.confidence] || valuation.confidence}`;
     page.drawText(conf, { x: centerX - helvetica.widthOfTextAtSize(conf, 10) / 2, y: height - 630, size: 10, font: helvetica, color: COLOR_GRAY });
   }
 
@@ -175,7 +194,7 @@ async function createValuationPage(doc, data) {
   page.drawText(dateText, { x: centerX - helvetica.widthOfTextAtSize(dateText, 10) / 2, y: 120, size: 10, font: helvetica, color: COLOR_GRAY });
   const disc = "Diese Indikation basiert auf Marktdaten und ersetzt keine professionelle Bewertung vor Ort.";
   page.drawText(disc, { x: centerX - helvetica.widthOfTextAtSize(disc, 9) / 2, y: 95, size: 9, font: helvetica, color: COLOR_GRAY });
-  const src = "Datenquelle: PriceHubble \u00B7 DOERTER Immobilien";
+  const src = "Datenquelle: PriceHubble · DOERTER Immobilien";
   page.drawText(src, { x: centerX - helvetica.widthOfTextAtSize(src, 9) / 2, y: 75, size: 9, font: helvetica, color: COLOR_GRAY });
 }
 
@@ -297,11 +316,11 @@ async function sendScheduledDossierEmail(data, pdfBase64) {
     to: email,
     subject: `Ihr Bewertungsdossier: ${address}`,
     html,
-    scheduledAt,
+    scheduled_at: scheduledAt,
   };
 
   if (pdfBase64) {
-    const safeAddr = address.replace(/[^a-zA-Z0-9\u00e4\u00f6\u00fc\u00c4\u00d6\u00dc\u00df\-]/g, "_");
+    const safeAddr = address.replace(/[^a-zA-Z0-9äöüÄÖÜß\-]/g, "_");
     emailPayload.attachments = [
       {
         filename: `DOERTER_Bewertungsdossier_${safeAddr}.pdf`,
@@ -334,15 +353,53 @@ export const handler = async (event) => {
     // 1. PH-Token holen
     const token = await getToken();
 
-    // 2. PriceHubble-PDF rendern (via Puppeteer)
-    console.log("Rendere PriceHubble-PDF...");
-    const phPdfBuffer = await renderPriceHubblePdf(dossierId, dealType, token);
+    // 2. PriceHubble-PDF holen (API-Export oder Puppeteer-Fallback)
+    console.log("Hole PriceHubble-PDF...");
+    let phPdfBuffer = null;
+
+    // Versuch 1: API-basierter PDF-Export
+    try {
+      const pdfApiUrl = `${PH_BASE}/api/v1/dossiers/${dossierId}/pdf`;
+      console.log("Versuche PH API PDF-Export:", pdfApiUrl);
+      const pdfRes = await fetch(pdfApiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          deal_type: dealType || "sale",
+          language: "de",
+          country_code: "DE",
+        }),
+      });
+      if (pdfRes.ok) {
+        const contentType = pdfRes.headers.get("content-type") || "";
+        if (contentType.includes("pdf")) {
+          phPdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
+          console.log("PH API PDF-Export erfolgreich:", Math.round(phPdfBuffer.length / 1024), "KB");
+        } else {
+          console.log("PH API returned non-PDF:", contentType, await pdfRes.text().catch(() => ""));
+          phPdfBuffer = null;
+        }
+      } else {
+        console.log("PH API PDF-Export fehlgeschlagen:", pdfRes.status);
+      }
+    } catch (e) {
+      console.log("PH API PDF-Export error:", e.message);
+    }
+
+    // Versuch 2: Puppeteer-Fallback
+    if (!phPdfBuffer) {
+      console.log("Fallback: Rendere PH-PDF via Puppeteer...");
+      phPdfBuffer = await renderPriceHubblePdf(dossierId, dealType, token);
+    }
 
     // 3. Finales PDF zusammenbauen
     console.log("Baue finales PDF...");
     const pdfBase64 = await buildFinalPdf(data, phPdfBuffer);
 
-    // 4. E-Mail planen (12 Min verzögert via Resend scheduledAt)
+    // 4. E-Mail planen (15 Min verzögert via Resend scheduled_at)
     console.log("Plane E-Mail-Versand...");
     await sendScheduledDossierEmail(data, pdfBase64);
 
