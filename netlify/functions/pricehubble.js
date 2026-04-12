@@ -134,7 +134,28 @@ async function createPipedriveLead(data) {
     const personId = personData?.data?.id;
     console.log("Pipedrive Person:", personId);
 
-    // 2. Lead anlegen (statt Deal — Leads landen im Leads-Inbox)
+    // 2. Lead-Label "Bewertung" holen oder anlegen
+    let labelId = null;
+    try {
+      const labelsRes = await fetch(`${pipBase}/leadLabels${qs}`);
+      const labelsData = await labelsRes.json().catch(() => ({}));
+      const existing = (labelsData?.data || []).find(l => l.name === "Bewertung");
+      if (existing) {
+        labelId = existing.id;
+      } else {
+        const createLabelRes = await fetch(`${pipBase}/leadLabels${qs}`, {
+          method: "POST", headers,
+          body: JSON.stringify({ name: "Bewertung", color: "green" }),
+        });
+        const newLabel = await createLabelRes.json().catch(() => ({}));
+        labelId = newLabel?.data?.id || null;
+      }
+      console.log("Pipedrive Label:", labelId ? labelId : "nicht verfügbar");
+    } catch (labelErr) {
+      console.log("Pipedrive Label error:", labelErr.message);
+    }
+
+    // 3. Lead anlegen (Leads landen im Leads-Inbox)
     let valuationNote = "Bewertung: nicht verfügbar";
     if (valuation) {
       const suffix = dealType === "rent" || dealType === "Vermietung" ? " EUR/Monat" : " EUR";
@@ -161,6 +182,9 @@ async function createPipedriveLead(data) {
       title: `Bewertung: ${address}`,
       person_id: personId,
     };
+    if (labelId) {
+      leadBody.label_ids = [labelId];
+    }
     if (valuation) {
       leadBody.value = { amount: valuation.value, currency: "EUR" };
     }
@@ -179,7 +203,7 @@ async function createPipedriveLead(data) {
     const leadId = leadData?.data?.id;
     console.log("Pipedrive Lead:", leadId);
 
-    // 3. Note zum Lead hinzufügen (Leads API hat kein note-Feld)
+    // 4. Note zum Lead hinzufügen (Leads API hat kein note-Feld)
     try {
       await fetch(`${pipBase}/notes${qs}`, {
         method: "POST",
